@@ -78,10 +78,10 @@ static char *strip_html(const char *src) {
         if (src[i] == '>') {
             in_tag = 0;
             tag_buf[tag_pos] = '\0';
-            if (strcmp(tag_buf, "em") == 0) {
+            if (tag_pos >= 2 && tag_buf[0] == 'e' && tag_buf[1] == 'm') {
                 const char *b = "<b>";
                 for (int k = 0; b[k]; k++) out[j++] = b[k];
-            } else if (strcmp(tag_buf, "/em") == 0) {
+            } else if (tag_pos >= 3 && tag_buf[0] == '/' && tag_buf[1] == 'e' && tag_buf[2] == 'm') {
                 const char *b = "</b>";
                 for (int k = 0; b[k]; k++) out[j++] = b[k];
             }
@@ -259,4 +259,143 @@ void free_translation_response(TranslationResponse *r) {
     }
     free(r->options);
     free(r);
+}
+
+#define MAX_FETCHED 256
+
+static const char *lang_to_code_short(const char *lang) {
+    static const char *map[][2] = {
+        {"english", "en"}, {"russian", "ru"}, {"ukrainian", "uk"},
+        {"french", "fr"}, {"german", "de"}, {"spanish", "es"},
+        {"italian", "it"}, {"portuguese", "pt"}, {"polish", "pl"},
+        {"dutch", "nl"}, {"arabic", "ar"}, {"hebrew", "he"},
+        {"japanese", "ja"}, {"turkish", "tr"}, {"chinese", "zh"},
+        {"romanian", "ro"}, {"swedish", "sv"}, {NULL, NULL}
+    };
+    for (int i = 0; map[i][0]; i++)
+        if (strcasecmp(map[i][0], lang) == 0)
+            return map[i][1];
+    return NULL;
+}
+
+ContextExamples *fetch_context_examples(const char *text, const char *source, const char *target, const char *fragment) {
+    if (!fragment) return NULL;
+
+    const char *src_short = lang_to_code_short(source);
+    const char *tgt_short = lang_to_code_short(target);
+    if (!src_short || !tgt_short) return NULL;
+
+    json_object *body = json_object_new_object();
+    json_object_object_add(body, "source_text", json_object_new_string(text));
+    json_object_object_add(body, "target_text", json_object_new_string(fragment));
+    json_object_object_add(body, "source_lang", json_object_new_string(src_short));
+    json_object_object_add(body, "target_lang", json_object_new_string(tgt_short));
+    json_object_object_add(body, "npage", json_object_new_int(1));
+    json_object_object_add(body, "mode", json_object_new_int(0));
+
+    const char *body_str = json_object_to_json_string(body);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { json_object_put(body); return NULL; }
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
+    headers = curl_slist_append(headers, "Origin: https://context.reverso.net");
+    headers = curl_slist_append(headers, "Referer: https://context.reverso.net/");
+    headers = curl_slist_append(headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+
+    struct WriteBuf buf = {0};
+    curl_easy_setopt(curl, CURLOPT_URL, "https://context.reverso.net/bst-query-service");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+    long http_code = 0;
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    json_object_put(body);
+
+    ContextExamples *ctx = calloc(1, sizeof(ContextExamples));
+
+    if (res != CURLE_OK || !buf.data) {
+        ctx->error = strdup("Network error: could not reach context.reverso.net");
+        free(buf.data);
+        return ctx;
+    }
+
+    json_object *resp = json_tokener_parse(buf.data);
+    if (!resp) {
+        FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
+        if (f) {
+            fprintf(f, "HTTP %ld\ncurl error: %d\nreq: source_text=%s target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
+                    http_code, res, text, fragment, src_short, tgt_short, buf.data);
+            fclose(f);
+        }
+        ctx->error = strdup("Failed to parse response from context.reverso.net");
+        free(buf.data);
+        return ctx;
+    }
+
+    json_object *list;
+    if (!json_object_object_get_ex(resp, "list", &list) ||
+        json_object_get_type(list) != json_type_array) {
+        FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
+        if (f) {
+            fprintf(f, "HTTP %ld\ncurl error: %d\nno 'list' array in response\nreq: source_text=%s target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
+                    http_code, res, text, fragment, src_short, tgt_short, buf.data);
+            fclose(f);
+        }
+        ctx->error = strdup("No examples list in response from context.reverso.net");
+        json_object_put(resp);
+        free(buf.data);
+        return ctx;
+    }
+
+    int n = json_object_array_length(list);
+    if (n > MAX_FETCHED) n = MAX_FETCHED;
+
+    ctx->source_examples = calloc(n, sizeof(char *));
+    ctx->target_examples = calloc(n, sizeof(char *));
+
+    for (int i = 0; i < n; i++) {
+        json_object *item = json_object_array_get_idx(list, i);
+        json_object *s_text, *t_text;
+
+        if (json_object_object_get_ex(item, "s_text", &s_text)) {
+            const char *raw = json_object_get_string(s_text);
+            ctx->source_examples[i] = strip_html(raw ? raw : "");
+        }
+        if (json_object_object_get_ex(item, "t_text", &t_text)) {
+            const char *raw = json_object_get_string(t_text);
+            ctx->target_examples[i] = strip_html(raw ? raw : "");
+        }
+        ctx->num_examples++;
+    }
+
+    json_object_put(resp);
+    free(buf.data);
+
+    if (ctx->num_examples == 0) {
+        ctx->error = strdup("No examples found on context.reverso.net");
+    }
+
+    return ctx;
+}
+
+void free_context_examples(ContextExamples *ctx) {
+    if (!ctx) return;
+    free(ctx->error);
+    for (int i = 0; i < ctx->num_examples; i++) {
+        free(ctx->source_examples[i]);
+        free(ctx->target_examples[i]);
+    }
+    free(ctx->source_examples);
+    free(ctx->target_examples);
+    free(ctx);
 }

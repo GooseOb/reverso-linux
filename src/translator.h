@@ -27,10 +27,19 @@ typedef struct {
     int num_options;
 } TranslationResponse;
 
+typedef struct {
+    char **source_examples;
+    char **target_examples;
+    int num_examples;
+    char *error;
+} ContextExamples;
+
 const char *lang_to_code(const char *lang);
 const char *code_to_lang(const char *code);
 TranslationResponse *translate_text(const char *text, const char *source, const char *target);
 void free_translation_response(TranslationResponse *r);
+ContextExamples *fetch_context_examples(const char *text, const char *source, const char *target, const char *fragment);
+void free_context_examples(ContextExamples *ctx);
 
 extern const char *SUPPORTED_LANGUAGES[];
 

@@ -104,36 +104,62 @@ static void rebuild_examples(int option_idx) {
         gtk_widget_destroy(GTK_WIDGET(l->data));
     g_list_free(child);
 
-    if (opt->num_examples == 0) return;
+    char *src_lang = gtk_combo_box_text_get_active_text(
+        GTK_COMBO_BOX_TEXT(ctx.source_combo));
+    char *tgt_lang = gtk_combo_box_text_get_active_text(
+        GTK_COMBO_BOX_TEXT(ctx.target_combo));
 
-    GtkWidget *src_hdr = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(src_hdr), "<b>Source</b>");
-    gtk_label_set_xalign(GTK_LABEL(src_hdr), 0.0);
-    gtk_grid_attach(GTK_GRID(ctx.examples_grid), src_hdr, 0, 0, 1, 1);
+    ContextExamples *fetched = NULL;
+    if (src_lang && tgt_lang && ctx.input_text)
+        fetched = fetch_context_examples(ctx.input_text, src_lang, tgt_lang,
+                                         opt->translation);
 
-    GtkWidget *tgt_hdr = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(tgt_hdr), "<b>Translation</b>");
-    gtk_label_set_xalign(GTK_LABEL(tgt_hdr), 0.0);
-    gtk_grid_attach(GTK_GRID(ctx.examples_grid), tgt_hdr, 1, 0, 1, 1);
+    if (fetched && fetched->num_examples > 0) {
+        GtkWidget *src_hdr = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(src_hdr), "<b>Source</b>");
+        gtk_label_set_xalign(GTK_LABEL(src_hdr), 0.0);
+        gtk_grid_attach(GTK_GRID(ctx.examples_grid), src_hdr, 0, 0, 1, 1);
 
-    for (int i = 0; i < opt->num_examples; i++) {
-        char markup[4096];
-        snprintf(markup, sizeof(markup), "\xe2\x80\xa2 %s",
-                 opt->source_examples[i] ? opt->source_examples[i] : "");
-        GtkWidget *sl = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(sl), markup);
-        gtk_label_set_xalign(GTK_LABEL(sl), 0.0);
-        gtk_label_set_line_wrap(GTK_LABEL(sl), TRUE);
-        gtk_grid_attach(GTK_GRID(ctx.examples_grid), sl, 0, i + 1, 1, 1);
+        GtkWidget *tgt_hdr = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(tgt_hdr), "<b>Translation</b>");
+        gtk_label_set_xalign(GTK_LABEL(tgt_hdr), 0.0);
+        gtk_grid_attach(GTK_GRID(ctx.examples_grid), tgt_hdr, 1, 0, 1, 1);
 
-        snprintf(markup, sizeof(markup), "\xe2\x80\xa2 %s",
-                 opt->target_examples[i] ? opt->target_examples[i] : "");
-        GtkWidget *tl = gtk_label_new(NULL);
-        gtk_label_set_markup(GTK_LABEL(tl), markup);
-        gtk_label_set_xalign(GTK_LABEL(tl), 0.0);
-        gtk_label_set_line_wrap(GTK_LABEL(tl), TRUE);
-        gtk_grid_attach(GTK_GRID(ctx.examples_grid), tl, 1, i + 1, 1, 1);
+        for (int i = 0; i < fetched->num_examples; i++) {
+            char buf[4096];
+            snprintf(buf, sizeof(buf), "\xe2\x80\xa2 %s",
+                     fetched->source_examples[i] ? fetched->source_examples[i] : "");
+            GtkWidget *sl = gtk_label_new(NULL);
+            gtk_label_set_markup(GTK_LABEL(sl), buf);
+            gtk_label_set_xalign(GTK_LABEL(sl), 0.0);
+            gtk_label_set_line_wrap(GTK_LABEL(sl), TRUE);
+            gtk_grid_attach(GTK_GRID(ctx.examples_grid), sl, 0, i + 1, 1, 1);
+
+            snprintf(buf, sizeof(buf), "\xe2\x80\xa2 %s",
+                     fetched->target_examples[i] ? fetched->target_examples[i] : "");
+            GtkWidget *tl = gtk_label_new(NULL);
+            gtk_label_set_markup(GTK_LABEL(tl), buf);
+            gtk_label_set_xalign(GTK_LABEL(tl), 0.0);
+            gtk_label_set_line_wrap(GTK_LABEL(tl), TRUE);
+            gtk_grid_attach(GTK_GRID(ctx.examples_grid), tl, 1, i + 1, 1, 1);
+        }
+        free_context_examples(fetched);
+    } else {
+        const char *err_msg = fetched && fetched->error ? fetched->error
+            : "Failed to fetch examples from context.reverso.net";
+        char markup[512];
+        snprintf(markup, sizeof(markup),
+                 "<span color='red'>%s</span>", err_msg);
+        GtkWidget *err = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(err), markup);
+        gtk_label_set_xalign(GTK_LABEL(err), 0.0);
+        gtk_label_set_line_wrap(GTK_LABEL(err), TRUE);
+        gtk_grid_attach(GTK_GRID(ctx.examples_grid), err, 0, 0, 2, 1);
+        free_context_examples(fetched);
     }
+
+    g_free(src_lang);
+    g_free(tgt_lang);
     gtk_widget_show_all(ctx.examples_grid);
 }
 
