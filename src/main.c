@@ -19,7 +19,7 @@ static void usage(const char *prog) {
             "  -t, --target LANG   Default target language\n"
             "  -v, --version       Show version\n"
             "  -h, --help          Show this help\n\n"
-            "Source is auto-detected. Target is remembered between sessions.\n"
+            "Source and target are remembered between sessions.\n"
             "Examples:\n"
             "  %s hello world\n"
             "  wl-paste -p | %s\n",
@@ -91,72 +91,37 @@ int main(int argc, char *argv[]) {
     char *target = load_config_target_lang();
     if (!target) target = strdup("russian");
 
-    const char *probe_src = strcasecmp(target, "english") == 0
-                                ? "russian" : "english";
+    char *saved_src = load_config_last_source_lang();
+    char *source_lang = NULL;
+    if (saved_src && lang_to_code(saved_src) &&
+        strcasecmp(saved_src, target) != 0)
+        source_lang = strdup(saved_src);
+    if (!source_lang)
+        source_lang = strdup(strcasecmp(target, "english") == 0
+                             ? "russian" : "english");
 
-    TranslationResponse *r = translate_text(text, probe_src, target);
-    int swapped = 0;
-    if (r && r->detected_language[0]) {
-        const char *detected = r->detected_language;
+    TranslationResponse *r = translate_text(text, source_lang, target);
 
-        if (strcasecmp(detected, target) == 0) {
-            char *saved_src = load_config_last_source_lang();
-            const char *fallback = (saved_src &&
-                strcasecmp(saved_src, detected) != 0)
-                    ? saved_src : probe_src;
-            TranslationResponse *r3 = translate_text(text, detected, fallback);
-            if (r3) {
-                free_translation_response(r);
-                r = r3;
-                save_config_target_lang(fallback);
-                save_config_last_source_lang(
-                    r->detected_language[0] ? r->detected_language : detected);
-            }
-            free(saved_src);
-        } else if (strcasecmp(detected, probe_src) == 0 &&
-                   r->direction_confidence < 1000) {
-            TranslationResponse *r2 = translate_text(text, target, probe_src);
-            if (r2 && r2->direction_confidence > r->direction_confidence) {
-                free_translation_response(r);
-                r = r2;
-                swapped = 1;
-            } else if (r2) {
-                free_translation_response(r2);
-            }
-        } else if (strcasecmp(detected, probe_src) != 0 &&
-                   strcasecmp(detected, target) != 0) {
-            TranslationResponse *r2 = translate_text(text, detected, target);
-            if (r2) {
-                free_translation_response(r);
-                r = r2;
-            }
-        }
-    }
+    save_config_target_lang(target);
+    save_config_last_source_lang(source_lang);
+
+    free(saved_src);
     free(target);
 
     if (!r) {
         fprintf(stderr, "Translation failed\n");
         free(text);
+        free(source_lang);
         return 1;
-    }
-
-    if (swapped) {
-        save_config_target_lang(probe_src);
-        save_config_last_source_lang(
-            r->detected_language[0] ? r->detected_language : "english");
-    } else {
-        save_config_last_source_lang(
-            r->detected_language[0] ? r->detected_language : "english");
     }
 
     g_set_prgname("reverso-linux");
     gtk_init(0, NULL);
 
-    show_translation_gui(text,
-                         r->detected_language[0]
-                             ? r->detected_language : "english", r);
+    show_translation_gui(text, source_lang, r);
     gtk_main();
 
+    free(source_lang);
     free(text);
     return 0;
 }

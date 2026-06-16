@@ -113,7 +113,6 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
 
     json_object *opts = json_object_new_object();
     json_object_object_add(opts, "contextResults", json_object_new_boolean(1));
-    json_object_object_add(opts, "languageDetection", json_object_new_boolean(1));
     json_object_object_add(opts, "origin", json_object_new_string("reversomobile"));
     json_object_object_add(opts, "sentenceSplitter", json_object_new_boolean(0));
     json_object_object_add(root, "options", opts);
@@ -163,21 +162,6 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
     strncpy(r->input_text, text, MAX_TEXT - 1);
     strncpy(r->source_lang, source, MAX_LANG - 1);
     strncpy(r->target_lang, target, MAX_LANG - 1);
-
-    json_object *lang_detect;
-    if (json_object_object_get_ex(resp, "languageDetection", &lang_detect)) {
-        json_object *detected;
-        if (json_object_object_get_ex(lang_detect, "detectedLanguage", &detected)) {
-            const char *det = json_object_get_string(detected);
-            const char *full = code_to_lang(det);
-            strncpy(r->detected_language, full ? full : det, MAX_LANG - 1);
-        }
-        json_object *confidence;
-        if (json_object_object_get_ex(lang_detect, "originalDirectionContextMatches", &confidence))
-            r->direction_confidence = json_object_get_int(confidence);
-        else if (json_object_object_get_ex(lang_detect, "changedDirectionContextMatches", &confidence))
-            r->direction_confidence = json_object_get_int(confidence);
-    }
 
     json_object *trans_arr;
     if (json_object_object_get_ex(resp, "translation", &trans_arr)) {
@@ -386,6 +370,134 @@ ContextExamples *fetch_context_examples(const char *text, const char *source, co
     }
 
     return ctx;
+}
+
+int fill_bst_options(TranslationResponse *r, const char *text, const char *source, const char *target) {
+    const char *src_short = lang_to_code_short(source);
+    const char *tgt_short = lang_to_code_short(target);
+    if (!src_short || !tgt_short) return -1;
+
+    const char *fragment = r->num_translations > 0 ? r->translations[0] : "";
+
+    json_object *body = json_object_new_object();
+    json_object_object_add(body, "source_text", json_object_new_string(text));
+    json_object_object_add(body, "target_text", json_object_new_string(fragment));
+    json_object_object_add(body, "source_lang", json_object_new_string(src_short));
+    json_object_object_add(body, "target_lang", json_object_new_string(tgt_short));
+    json_object_object_add(body, "npage", json_object_new_int(1));
+    json_object_object_add(body, "mode", json_object_new_int(0));
+
+    const char *body_str = json_object_to_json_string(body);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { json_object_put(body); return -1; }
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
+    headers = curl_slist_append(headers, "Origin: https://context.reverso.net");
+    headers = curl_slist_append(headers, "Referer: https://context.reverso.net/");
+    headers = curl_slist_append(headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+
+    struct WriteBuf buf = {0};
+    curl_easy_setopt(curl, CURLOPT_URL, "https://context.reverso.net/bst-query-service");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    json_object_put(body);
+
+    if (res != CURLE_OK || !buf.data) {
+        free(buf.data);
+        return -1;
+    }
+
+    json_object *resp = json_tokener_parse(buf.data);
+    if (!resp) {
+        free(buf.data);
+        return -1;
+    }
+
+    int count = 0;
+
+    json_object *dict_entries;
+    if (json_object_object_get_ex(resp, "dictionary_entry_list", &dict_entries) &&
+        json_object_get_type(dict_entries) == json_type_array) {
+
+        int n = json_object_array_length(dict_entries);
+        if (n > MAX_OPTIONS) n = MAX_OPTIONS;
+
+        if (n > 0) {
+            r->options = calloc(n, sizeof(TranslationOption));
+
+            for (int i = 0; i < n; i++) {
+                json_object *entry = json_object_array_get_idx(dict_entries, i);
+
+                json_object *term;
+                if (json_object_object_get_ex(entry, "term", &term)) {
+                    r->options[i].translation = strdup(json_object_get_string(term));
+                }
+
+                json_object *freq;
+                if (json_object_object_get_ex(entry, "frequency", &freq))
+                    r->options[i].frequency = json_object_get_int(freq);
+
+                count++;
+            }
+            r->num_options = count;
+        }
+    }
+
+    json_object *list;
+    if (json_object_object_get_ex(resp, "list", &list) &&
+        json_object_get_type(list) == json_type_array) {
+
+        int n = json_object_array_length(list);
+        if (n > MAX_EXAMPLES) n = MAX_EXAMPLES;
+
+        int opt_idx = 0;
+        if (r->num_options > 0 && *fragment) {
+            for (int i = 0; i < r->num_options; i++) {
+                if (r->options[i].translation &&
+                    strcmp(r->options[i].translation, fragment) == 0) {
+                    opt_idx = i;
+                    break;
+                }
+            }
+        }
+
+        if (r->num_options > 0 && opt_idx < r->num_options) {
+            TranslationOption *opt = &r->options[opt_idx];
+            opt->source_examples = calloc(n, sizeof(char *));
+            opt->target_examples = calloc(n, sizeof(char *));
+
+            for (int i = 0; i < n; i++) {
+                json_object *item = json_object_array_get_idx(list, i);
+                json_object *s_text, *t_text;
+
+                if (json_object_object_get_ex(item, "s_text", &s_text)) {
+                    const char *raw = json_object_get_string(s_text);
+                    opt->source_examples[i] = strip_html(raw ? raw : "");
+                }
+                if (json_object_object_get_ex(item, "t_text", &t_text)) {
+                    const char *raw = json_object_get_string(t_text);
+                    opt->target_examples[i] = strip_html(raw ? raw : "");
+                }
+                opt->num_examples++;
+            }
+        }
+    }
+
+    json_object_put(resp);
+    free(buf.data);
+
+    return count > 0 ? 0 : -1;
 }
 
 void free_context_examples(ContextExamples *ctx) {

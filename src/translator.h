@@ -19,8 +19,6 @@ typedef struct {
     char input_text[MAX_TEXT];
     char source_lang[MAX_LANG];
     char target_lang[MAX_LANG];
-    char detected_language[MAX_LANG];
-    int direction_confidence;
     char **translations;
     int num_translations;
     TranslationOption *options;
@@ -40,6 +38,7 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
 void free_translation_response(TranslationResponse *r);
 ContextExamples *fetch_context_examples(const char *text, const char *source, const char *target, const char *fragment);
 void free_context_examples(ContextExamples *ctx);
+int fill_bst_options(TranslationResponse *r, const char *text, const char *source, const char *target);
 
 extern const char *SUPPORTED_LANGUAGES[];
 

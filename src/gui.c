@@ -20,7 +20,6 @@ static struct {
     int num_buttons;
     int built;
     int toggling;
-    int updating_source;
     int suppressing;
 } ctx;
 
@@ -278,55 +277,26 @@ static void build_ui(void) {
 }
 
 static void do_translate(const char *src, const char *tgt) {
-    int swapped = 0;
     TranslationResponse *r = translate_text(ctx.input_text, src, tgt);
     if (!r) {
         gtk_label_set_text(GTK_LABEL(ctx.examples_header), "Translation failed");
         return;
     }
 
-    if (r->detected_language[0]) {
-        const char *detected = r->detected_language;
-
-        if (strcasecmp(detected, src) == 0 &&
-            r->direction_confidence < 1000) {
-            TranslationResponse *r2 = translate_text(ctx.input_text, tgt, src);
-            if (r2 && r2->direction_confidence > r->direction_confidence) {
-                free_translation_response(r); r = r2; swapped = 1;
-            } else if (r2) {
-                free_translation_response(r2);
-            }
-        } else if (strcasecmp(detected, src) != 0 &&
-                   strcasecmp(detected, tgt) != 0) {
-            TranslationResponse *r2 = translate_text(
-                ctx.input_text, detected, tgt);
-            if (r2) { free_translation_response(r); r = r2; }
-        }
-    }
-
     free_translation_response(ctx.response);
     ctx.response = r;
 
-    if (swapped) {
-        save_config_target_lang(src);
-        save_config_last_source_lang(
-            r->detected_language[0] ? r->detected_language : tgt);
-        ctx.updating_source = 1;
-        set_combo_active(GTK_COMBO_BOX(ctx.source_combo), tgt);
-        ctx.updating_source = 0;
-        ctx.suppressing = 1;
-        set_combo_active(GTK_COMBO_BOX(ctx.target_combo), src);
-        ctx.suppressing = 0;
-    } else {
-        save_config_target_lang(tgt);
-        if (r->detected_language[0])
-            save_config_last_source_lang(r->detected_language);
-        ctx.updating_source = 1;
-        if (r->detected_language[0])
-            set_combo_active(GTK_COMBO_BOX(ctx.source_combo),
-                             r->detected_language);
-        ctx.updating_source = 0;
+    save_config_target_lang(tgt);
+    save_config_last_source_lang(src);
+
+    if (r->num_options == 0 && r->num_translations > 0) {
+        if (fill_bst_options(r, ctx.input_text, r->source_lang, r->target_lang) != 0) {
+            r->options = calloc(1, sizeof(TranslationOption));
+            r->options[0].translation = strdup(r->translations[0]);
+            r->num_options = 1;
+        }
     }
+
     build_ui();
 }
 
@@ -365,6 +335,10 @@ static void retranslate(void) {
     char *tgt = gtk_combo_box_text_get_active_text(
         GTK_COMBO_BOX_TEXT(ctx.target_combo));
     if (!src || !tgt) { g_free(src); g_free(tgt); return; }
+
+    if (!lang_to_code(src) || !lang_to_code(tgt)) {
+        g_free(src); g_free(tgt); return;
+    }
 
     if (strcasecmp(src, tgt) == 0) {
         char *saved_tgt = load_config_target_lang();
@@ -413,7 +387,6 @@ static void retranslate(void) {
 static void on_lang_changed(GtkComboBox *combo, gpointer data) {
     (void)combo; (void)data;
     if (ctx.suppressing) return;
-    if (ctx.updating_source) return;
     if (!ctx.built) return;
     retranslate();
 }
@@ -434,10 +407,11 @@ static GtkWidget *make_lang_combo(GtkBox *parent, const char *label_text) {
     g_free(m);
     gtk_box_pack_start(parent, lbl, FALSE, FALSE, 0);
 
-    GtkWidget *combo = gtk_combo_box_text_new();
+    GtkWidget *combo = gtk_combo_box_text_new_with_entry();
     for (int i = 0; SUPPORTED_LANGUAGES[i]; i++)
         gtk_combo_box_text_append_text(
             GTK_COMBO_BOX_TEXT(combo), SUPPORTED_LANGUAGES[i]);
+    gtk_combo_box_set_entry_text_column(GTK_COMBO_BOX(combo), 0);
     gtk_box_pack_start(parent, combo, FALSE, FALSE, 0);
     return combo;
 }
@@ -495,6 +469,14 @@ void show_translation_gui(const char *text, const char *source_lang,
 
     ctx.content_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_pack_start(GTK_BOX(vbox), ctx.content_box, TRUE, TRUE, 0);
+
+    if (initial_r->num_options == 0 && initial_r->num_translations > 0) {
+        if (fill_bst_options(initial_r, text, source_lang, initial_r->target_lang) != 0) {
+            initial_r->options = calloc(1, sizeof(TranslationOption));
+            initial_r->options[0].translation = strdup(initial_r->translations[0]);
+            initial_r->num_options = 1;
+        }
+    }
 
     build_ui();
 
