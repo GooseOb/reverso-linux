@@ -1,0 +1,262 @@
+#define _GNU_SOURCE
+
+#include "translator.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <curl/curl.h>
+#include <json-c/json.h>
+
+static const char *API_URL = "https://api.reverso.net/translate/v1/translation";
+
+static struct {
+    const char *name;
+    const char *code;
+} LANG_MAP[] = {
+    {"english", "eng"}, {"russian", "rus"}, {"ukrainian", "ukr"},
+    {"french", "fra"}, {"german", "ger"}, {"spanish", "spa"},
+    {"italian", "ita"}, {"portuguese", "por"}, {"polish", "pol"},
+    {"dutch", "dut"}, {"arabic", "ara"}, {"hebrew", "heb"},
+    {"japanese", "jpn"}, {"turkish", "tur"}, {"chinese", "chi"},
+    {"romanian", "rum"}, {"swedish", "swe"},
+    {NULL, NULL}
+};
+
+const char *SUPPORTED_LANGUAGES[] = {
+    "english", "russian", "ukrainian", "french", "german",
+    "spanish", "italian", "portuguese", "polish", "dutch",
+    "arabic", "hebrew", "japanese", "turkish", "chinese",
+    "romanian", "swedish", NULL
+};
+
+const char *lang_to_code(const char *lang) {
+    for (int i = 0; LANG_MAP[i].name; i++)
+        if (strcasecmp(LANG_MAP[i].name, lang) == 0)
+            return LANG_MAP[i].code;
+    return NULL;
+}
+
+const char *code_to_lang(const char *code) {
+    for (int i = 0; LANG_MAP[i].name; i++)
+        if (strcasecmp(LANG_MAP[i].code, code) == 0)
+            return LANG_MAP[i].name;
+    return NULL;
+}
+
+struct WriteBuf {
+    char *data;
+    size_t len;
+};
+
+static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    struct WriteBuf *buf = userdata;
+    size_t total = size * nmemb;
+    char *tmp = realloc(buf->data, buf->len + total + 1);
+    if (!tmp) return 0;
+    buf->data = tmp;
+    memcpy(buf->data + buf->len, ptr, total);
+    buf->len += total;
+    buf->data[buf->len] = '\0';
+    return total;
+}
+
+static char *strip_html(const char *src) {
+    size_t len = strlen(src);
+    char *out = malloc(len * 2 + 1);
+    if (!out) return NULL;
+    size_t j = 0;
+    int in_tag = 0;
+    char tag_buf[16];
+    size_t tag_pos = 0;
+    for (size_t i = 0; i < len && src[i]; i++) {
+        if (src[i] == '<') {
+            in_tag = 1;
+            tag_pos = 0;
+            continue;
+        }
+        if (src[i] == '>') {
+            in_tag = 0;
+            tag_buf[tag_pos] = '\0';
+            if (strcmp(tag_buf, "em") == 0) {
+                const char *b = "<b>";
+                for (int k = 0; b[k]; k++) out[j++] = b[k];
+            } else if (strcmp(tag_buf, "/em") == 0) {
+                const char *b = "</b>";
+                for (int k = 0; b[k]; k++) out[j++] = b[k];
+            }
+            continue;
+        }
+        if (in_tag) {
+            if (tag_pos < sizeof(tag_buf) - 1)
+                tag_buf[tag_pos++] = src[i];
+        } else {
+            out[j++] = src[i];
+        }
+    }
+    out[j] = '\0';
+    return out;
+}
+
+TranslationResponse *translate_text(const char *text, const char *source, const char *target) {
+    const char *src_code = lang_to_code(source);
+    const char *tgt_code = lang_to_code(target);
+    if (!src_code || !tgt_code) return NULL;
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    json_object *root = json_object_new_object();
+    json_object_object_add(root, "format", json_object_new_string("text"));
+    json_object_object_add(root, "from", json_object_new_string(src_code));
+    json_object_object_add(root, "input", json_object_new_string(text));
+
+    json_object *opts = json_object_new_object();
+    json_object_object_add(opts, "contextResults", json_object_new_boolean(1));
+    json_object_object_add(opts, "languageDetection", json_object_new_boolean(1));
+    json_object_object_add(opts, "origin", json_object_new_string("reversomobile"));
+    json_object_object_add(opts, "sentenceSplitter", json_object_new_boolean(0));
+    json_object_object_add(root, "options", opts);
+    json_object_object_add(root, "to", json_object_new_string(tgt_code));
+
+    const char *body = json_object_to_json_string(root);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: */*");
+    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
+    headers = curl_slist_append(headers, "Origin: https://www.reverso.net");
+    headers = curl_slist_append(headers, "Referer: https://www.reverso.net/");
+    headers = curl_slist_append(headers, "Connection: keep-alive");
+    headers = curl_slist_append(headers, "Sec-Fetch-Dest: empty");
+    headers = curl_slist_append(headers, "Sec-Fetch-Mode: cors");
+    headers = curl_slist_append(headers, "Sec-Fetch-Site: same-site");
+
+    struct WriteBuf buf = {0};
+
+    curl_easy_setopt(curl, CURLOPT_URL, API_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    json_object_put(root);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || !buf.data) {
+        free(buf.data);
+        return NULL;
+    }
+
+    json_object *resp = json_tokener_parse(buf.data);
+    if (!resp) {
+        free(buf.data);
+        return NULL;
+    }
+
+    TranslationResponse *r = calloc(1, sizeof(TranslationResponse));
+    strncpy(r->input_text, text, MAX_TEXT - 1);
+    strncpy(r->source_lang, source, MAX_LANG - 1);
+    strncpy(r->target_lang, target, MAX_LANG - 1);
+
+    json_object *lang_detect;
+    if (json_object_object_get_ex(resp, "languageDetection", &lang_detect)) {
+        json_object *detected;
+        if (json_object_object_get_ex(lang_detect, "detectedLanguage", &detected)) {
+            const char *det = json_object_get_string(detected);
+            const char *full = code_to_lang(det);
+            strncpy(r->detected_language, full ? full : det, MAX_LANG - 1);
+        }
+        json_object *confidence;
+        if (json_object_object_get_ex(lang_detect, "originalDirectionContextMatches", &confidence))
+            r->direction_confidence = json_object_get_int(confidence);
+        else if (json_object_object_get_ex(lang_detect, "changedDirectionContextMatches", &confidence))
+            r->direction_confidence = json_object_get_int(confidence);
+    }
+
+    json_object *trans_arr;
+    if (json_object_object_get_ex(resp, "translation", &trans_arr)) {
+        int n = json_object_array_length(trans_arr);
+        r->translations = calloc(n, sizeof(char *));
+        for (int i = 0; i < n; i++) {
+            json_object *t = json_object_array_get_idx(trans_arr, i);
+            const char *s = json_object_get_string(t);
+            r->translations[i] = strdup(s ? s : "");
+            r->num_translations++;
+        }
+    }
+
+    json_object *ctx_results;
+    if (json_object_object_get_ex(resp, "contextResults", &ctx_results)) {
+        json_object *results;
+        if (json_object_object_get_ex(ctx_results, "results", &results)) {
+            int n = json_object_array_length(results);
+            if (n > MAX_OPTIONS) n = MAX_OPTIONS;
+            r->options = calloc(n, sizeof(TranslationOption));
+            for (int i = 0; i < n; i++) {
+                json_object *result = json_object_array_get_idx(results, i);
+
+                json_object *trans;
+                if (json_object_object_get_ex(result, "translation", &trans)) {
+                    r->options[i].translation = strdup(json_object_get_string(trans));
+                }
+
+                json_object *freq;
+                if (json_object_object_get_ex(result, "frequency", &freq))
+                    r->options[i].frequency = json_object_get_int(freq);
+
+                json_object *src_ex;
+                int cnt = 0;
+                if (json_object_object_get_ex(result, "sourceExamples", &src_ex))
+                    cnt = json_object_array_length(src_ex);
+                r->options[i].occurrence_count = cnt;
+
+                json_object *tgt_ex;
+                if (json_object_object_get_ex(result, "targetExamples", &tgt_ex)) {
+                    int ex_n = json_object_array_length(tgt_ex);
+                    if (ex_n > MAX_EXAMPLES) ex_n = MAX_EXAMPLES;
+                    r->options[i].source_examples = calloc(ex_n, sizeof(char *));
+                    r->options[i].target_examples = calloc(ex_n, sizeof(char *));
+                    r->options[i].num_examples = ex_n;
+                    for (int j = 0; j < ex_n; j++) {
+                        json_object *se = json_object_array_get_idx(src_ex, j);
+                        json_object *te = json_object_array_get_idx(tgt_ex, j);
+                        r->options[i].source_examples[j] = strip_html(
+                            json_object_get_string(se));
+                        r->options[i].target_examples[j] = strip_html(
+                            json_object_get_string(te));
+                    }
+                }
+
+                r->num_options++;
+            }
+        }
+    }
+
+    json_object_put(resp);
+    free(buf.data);
+    return r;
+}
+
+void free_translation_response(TranslationResponse *r) {
+    if (!r) return;
+    for (int i = 0; i < r->num_translations; i++)
+        free(r->translations[i]);
+    free(r->translations);
+    for (int i = 0; i < r->num_options; i++) {
+        free(r->options[i].translation);
+        for (int j = 0; j < r->options[i].num_examples; j++) {
+            free(r->options[i].source_examples[j]);
+            free(r->options[i].target_examples[j]);
+        }
+        free(r->options[i].source_examples);
+        free(r->options[i].target_examples);
+    }
+    free(r->options);
+    free(r);
+}
