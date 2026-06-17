@@ -1,46 +1,36 @@
 #define _GNU_SOURCE
 
 #include "translator.h"
+#include <curl/curl.h>
+#include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <curl/curl.h>
-#include <json-c/json.h>
 
 static const char *API_URL = "https://api.reverso.net/translate/v1/translation";
 
 static struct {
     const char *name;
     const char *code;
-} LANG_MAP[] = {
-    {"english", "eng"}, {"russian", "rus"}, {"ukrainian", "ukr"},
-    {"french", "fra"}, {"german", "ger"}, {"spanish", "spa"},
-    {"italian", "ita"}, {"portuguese", "por"}, {"polish", "pol"},
-    {"dutch", "dut"}, {"arabic", "ara"}, {"hebrew", "heb"},
-    {"japanese", "jpn"}, {"turkish", "tur"}, {"chinese", "chi"},
-    {"romanian", "rum"}, {"swedish", "swe"},
-    {NULL, NULL}
-};
+} LANG_MAP[] = {{"english", "eng"}, {"russian", "rus"}, {"ukrainian", "ukr"}, {"french", "fra"},
+    {"german", "ger"}, {"spanish", "spa"}, {"italian", "ita"}, {"portuguese", "por"},
+    {"polish", "pol"}, {"dutch", "dut"}, {"arabic", "ara"}, {"hebrew", "heb"}, {"japanese", "jpn"},
+    {"turkish", "tur"}, {"chinese", "chi"}, {"romanian", "rum"}, {"swedish", "swe"}, {NULL, NULL}};
 
-const char *SUPPORTED_LANGUAGES[] = {
-    "english", "russian", "ukrainian", "french", "german",
-    "spanish", "italian", "portuguese", "polish", "dutch",
-    "arabic", "hebrew", "japanese", "turkish", "chinese",
-    "romanian", "swedish", NULL
-};
+const char *SUPPORTED_LANGUAGES[] = {"english", "russian", "ukrainian", "french", "german",
+    "spanish", "italian", "portuguese", "polish", "dutch", "arabic", "hebrew", "japanese",
+    "turkish", "chinese", "romanian", "swedish", NULL};
 
 const char *lang_to_code(const char *lang) {
     for (int i = 0; LANG_MAP[i].name; i++)
-        if (strcasecmp(LANG_MAP[i].name, lang) == 0)
-            return LANG_MAP[i].code;
+        if (strcasecmp(LANG_MAP[i].name, lang) == 0) return LANG_MAP[i].code;
     return NULL;
 }
 
 const char *code_to_lang(const char *code) {
     for (int i = 0; LANG_MAP[i].name; i++)
-        if (strcasecmp(LANG_MAP[i].code, code) == 0)
-            return LANG_MAP[i].name;
+        if (strcasecmp(LANG_MAP[i].code, code) == 0) return LANG_MAP[i].name;
     return NULL;
 }
 
@@ -81,15 +71,15 @@ static char *strip_html(const char *src) {
             if (tag_pos >= 2 && tag_buf[0] == 'e' && tag_buf[1] == 'm') {
                 const char *b = "<b>";
                 for (int k = 0; b[k]; k++) out[j++] = b[k];
-            } else if (tag_pos >= 3 && tag_buf[0] == '/' && tag_buf[1] == 'e' && tag_buf[2] == 'm') {
+            } else if (tag_pos >= 3 && tag_buf[0] == '/' && tag_buf[1] == 'e' &&
+                       tag_buf[2] == 'm') {
                 const char *b = "</b>";
                 for (int k = 0; b[k]; k++) out[j++] = b[k];
             }
             continue;
         }
         if (in_tag) {
-            if (tag_pos < sizeof(tag_buf) - 1)
-                tag_buf[tag_pos++] = src[i];
+            if (tag_pos < sizeof(tag_buf) - 1) tag_buf[tag_pos++] = src[i];
         } else {
             out[j++] = src[i];
         }
@@ -138,7 +128,9 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 "
+        "Safari/537.36");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
 
     CURLcode res = curl_easy_perform(curl);
@@ -210,10 +202,8 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
                     for (int j = 0; j < ex_n; j++) {
                         json_object *se = json_object_array_get_idx(src_ex, j);
                         json_object *te = json_object_array_get_idx(tgt_ex, j);
-                        r->options[i].source_examples[j] = strip_html(
-                            json_object_get_string(se));
-                        r->options[i].target_examples[j] = strip_html(
-                            json_object_get_string(te));
+                        r->options[i].source_examples[j] = strip_html(json_object_get_string(se));
+                        r->options[i].target_examples[j] = strip_html(json_object_get_string(te));
                     }
                 }
 
@@ -229,8 +219,7 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
 
 void free_translation_response(TranslationResponse *r) {
     if (!r) return;
-    for (int i = 0; i < r->num_translations; i++)
-        free(r->translations[i]);
+    for (int i = 0; i < r->num_translations; i++) free(r->translations[i]);
     free(r->translations);
     for (int i = 0; i < r->num_options; i++) {
         free(r->options[i].translation);
@@ -248,21 +237,18 @@ void free_translation_response(TranslationResponse *r) {
 #define MAX_FETCHED 256
 
 static const char *lang_to_code_short(const char *lang) {
-    static const char *map[][2] = {
-        {"english", "en"}, {"russian", "ru"}, {"ukrainian", "uk"},
-        {"french", "fr"}, {"german", "de"}, {"spanish", "es"},
-        {"italian", "it"}, {"portuguese", "pt"}, {"polish", "pl"},
-        {"dutch", "nl"}, {"arabic", "ar"}, {"hebrew", "he"},
-        {"japanese", "ja"}, {"turkish", "tr"}, {"chinese", "zh"},
-        {"romanian", "ro"}, {"swedish", "sv"}, {NULL, NULL}
-    };
+    static const char *map[][2] = {{"english", "en"}, {"russian", "ru"}, {"ukrainian", "uk"},
+        {"french", "fr"}, {"german", "de"}, {"spanish", "es"}, {"italian", "it"},
+        {"portuguese", "pt"}, {"polish", "pl"}, {"dutch", "nl"}, {"arabic", "ar"}, {"hebrew", "he"},
+        {"japanese", "ja"}, {"turkish", "tr"}, {"chinese", "zh"}, {"romanian", "ro"},
+        {"swedish", "sv"}, {NULL, NULL}};
     for (int i = 0; map[i][0]; i++)
-        if (strcasecmp(map[i][0], lang) == 0)
-            return map[i][1];
+        if (strcasecmp(map[i][0], lang) == 0) return map[i][1];
     return NULL;
 }
 
-ContextExamples *fetch_context_examples(const char *text, const char *source, const char *target, const char *fragment) {
+ContextExamples *fetch_context_examples(
+    const char *text, const char *source, const char *target, const char *fragment) {
     if (!fragment) return NULL;
 
     const char *src_short = lang_to_code_short(source);
@@ -280,7 +266,10 @@ ContextExamples *fetch_context_examples(const char *text, const char *source, co
     const char *body_str = json_object_to_json_string(body);
 
     CURL *curl = curl_easy_init();
-    if (!curl) { json_object_put(body); return NULL; }
+    if (!curl) {
+        json_object_put(body);
+        return NULL;
+    }
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -288,7 +277,8 @@ ContextExamples *fetch_context_examples(const char *text, const char *source, co
     headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
     headers = curl_slist_append(headers, "Origin: https://context.reverso.net");
     headers = curl_slist_append(headers, "Referer: https://context.reverso.net/");
-    headers = curl_slist_append(headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+    headers = curl_slist_append(
+        headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
 
     struct WriteBuf buf = {0};
     curl_easy_setopt(curl, CURLOPT_URL, "https://context.reverso.net/bst-query-service");
@@ -317,8 +307,10 @@ ContextExamples *fetch_context_examples(const char *text, const char *source, co
     if (!resp) {
         FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
         if (f) {
-            fprintf(f, "HTTP %ld\ncurl error: %d\nreq: source_text=%s target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
-                    http_code, res, text, fragment, src_short, tgt_short, buf.data);
+            fprintf(f,
+                "HTTP %ld\ncurl error: %d\nreq: source_text=%s target_text=%s source_lang=%s "
+                "target_lang=%s\nresp:\n%s\n",
+                http_code, res, text, fragment, src_short, tgt_short, buf.data);
             fclose(f);
         }
         ctx->error = strdup("Failed to parse response from context.reverso.net");
@@ -331,8 +323,10 @@ ContextExamples *fetch_context_examples(const char *text, const char *source, co
         json_object_get_type(list) != json_type_array) {
         FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
         if (f) {
-            fprintf(f, "HTTP %ld\ncurl error: %d\nno 'list' array in response\nreq: source_text=%s target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
-                    http_code, res, text, fragment, src_short, tgt_short, buf.data);
+            fprintf(f,
+                "HTTP %ld\ncurl error: %d\nno 'list' array in response\nreq: source_text=%s "
+                "target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
+                http_code, res, text, fragment, src_short, tgt_short, buf.data);
             fclose(f);
         }
         ctx->error = strdup("No examples list in response from context.reverso.net");
@@ -365,14 +359,13 @@ ContextExamples *fetch_context_examples(const char *text, const char *source, co
     json_object_put(resp);
     free(buf.data);
 
-    if (ctx->num_examples == 0) {
-        ctx->error = strdup("No examples found on context.reverso.net");
-    }
+    if (ctx->num_examples == 0) { ctx->error = strdup("No examples found on context.reverso.net"); }
 
     return ctx;
 }
 
-int fill_bst_options(TranslationResponse *r, const char *text, const char *source, const char *target) {
+int fill_bst_options(
+    TranslationResponse *r, const char *text, const char *source, const char *target) {
     const char *src_short = lang_to_code_short(source);
     const char *tgt_short = lang_to_code_short(target);
     if (!src_short || !tgt_short) return -1;
@@ -390,7 +383,10 @@ int fill_bst_options(TranslationResponse *r, const char *text, const char *sourc
     const char *body_str = json_object_to_json_string(body);
 
     CURL *curl = curl_easy_init();
-    if (!curl) { json_object_put(body); return -1; }
+    if (!curl) {
+        json_object_put(body);
+        return -1;
+    }
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -398,7 +394,8 @@ int fill_bst_options(TranslationResponse *r, const char *text, const char *sourc
     headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
     headers = curl_slist_append(headers, "Origin: https://context.reverso.net");
     headers = curl_slist_append(headers, "Referer: https://context.reverso.net/");
-    headers = curl_slist_append(headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+    headers = curl_slist_append(
+        headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
 
     struct WriteBuf buf = {0};
     curl_easy_setopt(curl, CURLOPT_URL, "https://context.reverso.net/bst-query-service");
@@ -429,7 +426,6 @@ int fill_bst_options(TranslationResponse *r, const char *text, const char *sourc
     json_object *dict_entries;
     if (json_object_object_get_ex(resp, "dictionary_entry_list", &dict_entries) &&
         json_object_get_type(dict_entries) == json_type_array) {
-
         int n = json_object_array_length(dict_entries);
         if (n > MAX_OPTIONS) n = MAX_OPTIONS;
 
@@ -457,15 +453,13 @@ int fill_bst_options(TranslationResponse *r, const char *text, const char *sourc
     json_object *list;
     if (json_object_object_get_ex(resp, "list", &list) &&
         json_object_get_type(list) == json_type_array) {
-
         int n = json_object_array_length(list);
         if (n > MAX_EXAMPLES) n = MAX_EXAMPLES;
 
         int opt_idx = 0;
         if (r->num_options > 0 && *fragment) {
             for (int i = 0; i < r->num_options; i++) {
-                if (r->options[i].translation &&
-                    strcmp(r->options[i].translation, fragment) == 0) {
+                if (r->options[i].translation && strcmp(r->options[i].translation, fragment) == 0) {
                     opt_idx = i;
                     break;
                 }

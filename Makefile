@@ -31,4 +31,7 @@ install: $(TARGET)
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 
-.PHONY: all clean install uninstall
+format:
+	clang-format -i src/*.c src/*.h
+
+.PHONY: all clean install uninstall format

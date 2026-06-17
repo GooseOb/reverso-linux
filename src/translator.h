@@ -36,9 +36,11 @@ const char *lang_to_code(const char *lang);
 const char *code_to_lang(const char *code);
 TranslationResponse *translate_text(const char *text, const char *source, const char *target);
 void free_translation_response(TranslationResponse *r);
-ContextExamples *fetch_context_examples(const char *text, const char *source, const char *target, const char *fragment);
+ContextExamples *fetch_context_examples(
+    const char *text, const char *source, const char *target, const char *fragment);
 void free_context_examples(ContextExamples *ctx);
-int fill_bst_options(TranslationResponse *r, const char *text, const char *source, const char *target);
+int fill_bst_options(
+    TranslationResponse *r, const char *text, const char *source, const char *target);
 
 extern const char *SUPPORTED_LANGUAGES[];
 

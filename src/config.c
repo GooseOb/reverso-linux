@@ -74,7 +74,10 @@ void save_config_target_lang(const char *lang) {
 
     FILE *f = fopen(path, "w");
     free(path);
-    if (!f) { free(existing_source); return; }
+    if (!f) {
+        free(existing_source);
+        return;
+    }
 
     fprintf(f, "target_lang=%s\n", lang);
     if (existing_source) {
@@ -100,7 +103,10 @@ void save_config_last_source_lang(const char *lang) {
 
     FILE *f = fopen(path, "w");
     free(path);
-    if (!f) { free(existing_target); return; }
+    if (!f) {
+        free(existing_target);
+        return;
+    }
 
     if (existing_target) {
         fprintf(f, "target_lang=%s\n", existing_target);
