@@ -1,5 +1,5 @@
 VERSION ?= 0.0.1
-CFLAGS = -Wall -Wextra -pedantic -std=c11 -DVERSION=\"$(VERSION)\" $(shell pkg-config --cflags libcurl json-c gtk+-3.0)
+CFLAGS = -O3 -Wall -Wextra -pedantic -std=c11 -DVERSION=\"$(VERSION)\" $(shell pkg-config --cflags libcurl json-c gtk+-3.0)
 LDLIBS = $(shell pkg-config --libs libcurl json-c gtk+-3.0) -lm
 
 BUILD_DIR = build
