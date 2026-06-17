@@ -391,6 +391,38 @@ static void on_lang_changed(GtkComboBox *combo, gpointer data) {
     retranslate();
 }
 
+static void on_swap_clicked(GtkButton *btn, gpointer data) {
+    (void)btn; (void)data;
+    char *src = gtk_combo_box_text_get_active_text(
+        GTK_COMBO_BOX_TEXT(ctx.source_combo));
+    char *tgt = gtk_combo_box_text_get_active_text(
+        GTK_COMBO_BOX_TEXT(ctx.target_combo));
+    if (!src || !tgt) { g_free(src); g_free(tgt); return; }
+
+    char *selected_text = get_selected_option_text();
+    if (!selected_text && ctx.response && ctx.response->num_options > 0 &&
+        ctx.response->options[0].translation)
+        selected_text = strdup(ctx.response->options[0].translation);
+
+    ctx.suppressing = 1;
+    set_combo_active(GTK_COMBO_BOX(ctx.source_combo), tgt);
+    set_combo_active(GTK_COMBO_BOX(ctx.target_combo), src);
+    ctx.suppressing = 0;
+
+    if (selected_text) {
+        free(ctx.input_text);
+        ctx.input_text = selected_text;
+        char buf[520];
+        snprintf(buf, sizeof(buf), "\xe2\x80\x9c%.500s\xe2\x80\x9d", ctx.input_text);
+        gtk_label_set_text(GTK_LABEL(ctx.text_label), buf);
+    }
+
+    g_free(src);
+    g_free(tgt);
+
+    retranslate();
+}
+
 static void on_destroy(void) { gtk_main_quit(); }
 
 static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event,
@@ -407,11 +439,10 @@ static GtkWidget *make_lang_combo(GtkBox *parent, const char *label_text) {
     g_free(m);
     gtk_box_pack_start(parent, lbl, FALSE, FALSE, 0);
 
-    GtkWidget *combo = gtk_combo_box_text_new_with_entry();
+    GtkWidget *combo = gtk_combo_box_text_new();
     for (int i = 0; SUPPORTED_LANGUAGES[i]; i++)
         gtk_combo_box_text_append_text(
             GTK_COMBO_BOX_TEXT(combo), SUPPORTED_LANGUAGES[i]);
-    gtk_combo_box_set_entry_text_column(GTK_COMBO_BOX(combo), 0);
     gtk_box_pack_start(parent, combo, FALSE, FALSE, 0);
     return combo;
 }
@@ -440,8 +471,10 @@ void show_translation_gui(const char *text, const char *source_lang,
     GtkWidget *lang_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     ctx.source_combo = make_lang_combo(GTK_BOX(lang_hbox), "From:");
 
-    GtkWidget *arr = gtk_label_new(" \xe2\x86\x92 ");
-    gtk_box_pack_start(GTK_BOX(lang_hbox), arr, FALSE, FALSE, 0);
+    GtkWidget *swap_btn = gtk_button_new_with_label("\xe2\x87\x84");
+    gtk_widget_set_tooltip_text(swap_btn, "Swap languages");
+    g_signal_connect(swap_btn, "clicked", G_CALLBACK(on_swap_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(lang_hbox), swap_btn, FALSE, FALSE, 0);
 
     ctx.target_combo = make_lang_combo(GTK_BOX(lang_hbox), "To:");
 

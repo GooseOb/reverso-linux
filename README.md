@@ -4,11 +4,10 @@ A Linux desktop translator using the [Reverso](https://www.reverso.net) translat
 
 ## Features
 
-- **Auto-detect source language** — just select text, no need to specify source
-- **Persistent target language** — saved to `~/.config/reverso-linux/config`
-- **Translation options** for short text (1–3 words) with frequency counts, e.g. `бежать [6074]`
+- **Persistent source & target language** — saved to `~/.config/reverso-linux/config`
+- **Translation options** for short text (1–3 words) with frequency counts
 - **Usage examples** — click a translation option to see sentence examples side by side
-- **16 supported languages**: english, russian, ukrainian, french, german, spanish, italian, portuguese, polish, dutch, arabic, hebrew, japanese, turkish, chinese, romanian
+- **16 supported languages**: english, russian, ukrainian, french, german, spanish, italian, portuguese, polish, dutch, arabic, hebrew, japanese, turkish, chinese, romanian, swedish
 
 ## Dependencies
 
@@ -16,7 +15,6 @@ A Linux desktop translator using the [Reverso](https://www.reverso.net) translat
 - `json-c` — JSON parsing
 - `gtk3` — GUI
 - `pkg-config` — build flags
-- `wl-clipboard` (optional, for Wayland clipboard integration)
 
 ## Build & Install
 
@@ -25,20 +23,13 @@ make
 sudo make install
 ```
 
-To override the version (printed by `-v`):
-
-```sh
-make VERSION=1.0.1
-sudo make install
-```
-
 ## Usage
 
 ### CLI
 
 ```sh
-reverso-linux hello world              # translate from stdin
-wl-paste -p | reverso-linux           # pipe from clipboard
+reverso-linux hello world             # translate from stdin
+wl-paste -p | reverso-linux           # pipe from clipboard, wl-paste is part of wl-clipboard
 reverso-linux -t french hello world   # set target language
 reverso-linux -h                      # help
 reverso-linux -v                      # version
@@ -49,10 +40,10 @@ reverso-linux -v                      # version
 Add to `~/.config/hypr/hyprland.conf`:
 
 ```
-bind = ALT, R, exec, wl-paste -p | reverso-linux
+bind = SUPER, R, exec, wl-paste -p | reverso-linux
 ```
 
-Press **Alt+R** to translate the current clipboard selection.
+Press **Win+R** to translate the current clipboard selection.
 
 ### Changing target language
 
