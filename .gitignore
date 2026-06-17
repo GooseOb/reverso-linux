@@ -11,3 +11,6 @@ compile_commands.json
 Thumbs.db
 
 /reverso-api/
+release/
+*.tar.gz
+*.sha256

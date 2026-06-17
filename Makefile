@@ -1,4 +1,4 @@
-VERSION ?= 0.0.1
+VERSION ?= $(shell { git describe --tags --match 'v*' 2>/dev/null || echo "0.0.1"; } | sed 's/^v//')
 CFLAGS = -O3 -Wall -Wextra -pedantic -std=c11 -DVERSION=\"$(VERSION)\" $(shell pkg-config --cflags libcurl json-c gtk+-3.0)
 LDLIBS = $(shell pkg-config --libs libcurl json-c gtk+-3.0) -lm
 

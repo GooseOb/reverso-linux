@@ -1,0 +1,85 @@
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libjson-c-dev libgtk-3-dev
+
+      - name: Build
+        run: make VERSION="${{ steps.version.outputs.version }}" clean all
+
+      - name: Package release archive
+        run: |
+          mkdir -p release
+          cp reverso-linux README.md LICENSE release/ 2>/dev/null || true
+          cd release
+          tar czf ../reverso-linux-${{ steps.version.outputs.version }}.tar.gz *
+
+      - name: Generate checksums
+        run: |
+          sha256sum reverso-linux-${{ steps.version.outputs.version }}.tar.gz > reverso-linux-${{ steps.version.outputs.version }}.sha256
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            reverso-linux-${{ steps.version.outputs.version }}.tar.gz
+            reverso-linux-${{ steps.version.outputs.version }}.sha256
+
+  aur-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    if: vars.AUR_PACKAGE_NAME != ''
+    steps:
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+
+      - name: Push to AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          AUR_PACKAGE: ${{ vars.AUR_PACKAGE_NAME }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+
+          git clone -q "ssh://aur@aur.archlinux.org/$AUR_PACKAGE.git" /tmp/aur-pkg
+          cd /tmp/aur-pkg
+
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/v$VERSION.tar.gz" \
+            -o "reverso-linux-v$VERSION.tar.gz"
+          SUM=$(sha256sum "reverso-linux-v$VERSION.tar.gz" | cut -d' ' -f1)
+
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('$SUM')/" PKGBUILD
+
+          makepkg --printsrcinfo > .SRCINFO
+
+          git add PKGBUILD .SRCINFO
+          git -c user.name="GitHub Actions" \
+              -c user.email="actions@github.com" \
+              commit -m "Release v$VERSION"
+          git push
