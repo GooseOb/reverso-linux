@@ -13,7 +13,8 @@ static struct {
     GtkWidget *content_box;
     GtkWidget *source_combo;
     GtkWidget *target_combo;
-    GtkWidget *text_label;
+    GtkWidget *text_entry;
+    GtkWidget *translate_btn;
     GtkWidget *examples_header;
     GtkWidget *examples_grid;
     GtkWidget *option_buttons[64];
@@ -369,9 +370,7 @@ static void retranslate(void) {
         if (selected_text) {
             free(ctx.input_text);
             ctx.input_text = selected_text;
-            char buf[520];
-            snprintf(buf, sizeof(buf), "\xe2\x80\x9c%.500s\xe2\x80\x9d", ctx.input_text);
-            gtk_label_set_text(GTK_LABEL(ctx.text_label), buf);
+            gtk_entry_set_text(GTK_ENTRY(ctx.text_entry), ctx.input_text);
         }
 
         g_free(src); g_free(tgt);
@@ -412,9 +411,7 @@ static void on_swap_clicked(GtkButton *btn, gpointer data) {
     if (selected_text) {
         free(ctx.input_text);
         ctx.input_text = selected_text;
-        char buf[520];
-        snprintf(buf, sizeof(buf), "\xe2\x80\x9c%.500s\xe2\x80\x9d", ctx.input_text);
-        gtk_label_set_text(GTK_LABEL(ctx.text_label), buf);
+        gtk_entry_set_text(GTK_ENTRY(ctx.text_entry), ctx.input_text);
     }
 
     g_free(src);
@@ -445,6 +442,23 @@ static GtkWidget *make_lang_combo(GtkBox *parent, const char *label_text) {
             GTK_COMBO_BOX_TEXT(combo), SUPPORTED_LANGUAGES[i]);
     gtk_box_pack_start(parent, combo, FALSE, FALSE, 0);
     return combo;
+}
+
+static void on_translate_clicked(void) {
+    const char *new_text = gtk_entry_get_text(GTK_ENTRY(ctx.text_entry));
+    if (!new_text || !*new_text) return;
+
+    char *src = gtk_combo_box_text_get_active_text(
+        GTK_COMBO_BOX_TEXT(ctx.source_combo));
+    char *tgt = gtk_combo_box_text_get_active_text(
+        GTK_COMBO_BOX_TEXT(ctx.target_combo));
+    if (!src || !tgt) { g_free(src); g_free(tgt); return; }
+
+    free(ctx.input_text);
+    ctx.input_text = strdup(new_text);
+
+    do_translate(src, tgt);
+    g_free(src); g_free(tgt);
 }
 
 void show_translation_gui(const char *text, const char *source_lang,
@@ -492,13 +506,18 @@ void show_translation_gui(const char *text, const char *source_lang,
     free(saved_lang);
     gtk_box_pack_start(GTK_BOX(vbox), lang_hbox, FALSE, FALSE, 0);
 
-    char text_buf[520];
-    snprintf(text_buf, sizeof(text_buf),
-             "\xe2\x80\x9c%.500s\xe2\x80\x9d", text);
-    ctx.text_label = gtk_label_new(text_buf);
-    gtk_label_set_xalign(GTK_LABEL(ctx.text_label), 0.0);
-    gtk_label_set_line_wrap(GTK_LABEL(ctx.text_label), TRUE);
-    gtk_box_pack_start(GTK_BOX(vbox), ctx.text_label, FALSE, FALSE, 0);
+    GtkWidget *input_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    ctx.text_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(ctx.text_entry), text);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(ctx.text_entry), "Enter text to translate...");
+    g_signal_connect(ctx.text_entry, "activate", G_CALLBACK(on_translate_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(input_hbox), ctx.text_entry, TRUE, TRUE, 0);
+
+    ctx.translate_btn = gtk_button_new_with_label("Translate");
+    g_signal_connect(ctx.translate_btn, "clicked", G_CALLBACK(on_translate_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(input_hbox), ctx.translate_btn, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(vbox), input_hbox, FALSE, FALSE, 0);
 
     ctx.content_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_pack_start(GTK_BOX(vbox), ctx.content_box, TRUE, TRUE, 0);
