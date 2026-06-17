@@ -456,7 +456,7 @@ void show_translation_gui(const char *text, const char *source_lang,
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "Reverso Linux");
-    gtk_window_set_default_size(GTK_WINDOW(window), 480, 320);
+    gtk_window_set_default_size(GTK_WINDOW(window), 640, 640);
     gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
     gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);

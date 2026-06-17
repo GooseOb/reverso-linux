@@ -2,6 +2,8 @@
 
 A Linux desktop translator using the [Reverso](https://www.reverso.net) translation API. Select text, press a hotkey, get translations with usage examples.
 
+![Screenshot](./assets/screenshot_hyprland.png)
+
 ## Features
 
 - **Persistent source & target language** — saved to `~/.config/reverso-linux/config`
@@ -44,13 +46,3 @@ bind = SUPER, R, exec, wl-paste -p | reverso-linux
 ```
 
 Press **Win+R** to translate the current clipboard selection.
-
-### Changing target language
-
-Use the dropdown in the GUI, or set it from the command line:
-
-```sh
-reverso-linux -t french
-```
-
-The target persists across sessions.
