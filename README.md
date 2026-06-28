@@ -43,6 +43,8 @@ Add to `~/.config/hypr/hyprland.conf`:
 
 ```
 bind = SUPER, R, exec, wl-paste -p | reverso-linux
+
+# windowrule = float on, match:class ^(reverso-linux)$
 ```
 
 Press **Win+R** to translate the current clipboard selection.
