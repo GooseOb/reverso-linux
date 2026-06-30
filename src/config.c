@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,28 +25,6 @@ static char *get_config_path(void) {
     return path;
 }
 
-char *load_config_target_lang(void) {
-    char *path = get_config_path();
-    if (!path) return NULL;
-
-    FILE *f = fopen(path, "r");
-    free(path);
-    if (!f) return NULL;
-
-    char line[256];
-    char *lang = NULL;
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "target_lang=", 12) == 0) {
-            size_t len = strlen(line);
-            if (len > 12 && line[len - 1] == '\n') line[len - 1] = '\0';
-            lang = strdup(line + 12);
-            break;
-        }
-    }
-    fclose(f);
-    return lang;
-}
-
 static char *read_value(const char *path, const char *key, int key_len) {
     FILE *f = fopen(path, "r");
     if (!f) return NULL;
@@ -66,25 +42,12 @@ static char *read_value(const char *path, const char *key, int key_len) {
     return val;
 }
 
-void save_config_target_lang(const char *lang) {
+char *load_config_target_lang(void) {
     char *path = get_config_path();
-    if (!path) return;
-
-    char *existing_source = read_value(path, "last_source_lang=", 17);
-
-    FILE *f = fopen(path, "w");
+    if (!path) return NULL;
+    char *val = read_value(path, "target_lang=", 12);
     free(path);
-    if (!f) {
-        free(existing_source);
-        return;
-    }
-
-    fprintf(f, "target_lang=%s\n", lang);
-    if (existing_source) {
-        fprintf(f, "last_source_lang=%s\n", existing_source);
-        free(existing_source);
-    }
-    fclose(f);
+    return val;
 }
 
 char *load_config_last_source_lang(void) {
@@ -95,23 +58,25 @@ char *load_config_last_source_lang(void) {
     return val;
 }
 
-void save_config_last_source_lang(const char *lang) {
+static void rewrite_config(const char *target, const char *source) {
     char *path = get_config_path();
     if (!path) return;
-
-    char *existing_target = read_value(path, "target_lang=", 12);
-
     FILE *f = fopen(path, "w");
     free(path);
-    if (!f) {
-        free(existing_target);
-        return;
-    }
-
-    if (existing_target) {
-        fprintf(f, "target_lang=%s\n", existing_target);
-        free(existing_target);
-    }
-    fprintf(f, "last_source_lang=%s\n", lang);
+    if (!f) return;
+    if (target) fprintf(f, "target_lang=%s\n", target);
+    if (source) fprintf(f, "last_source_lang=%s\n", source);
     fclose(f);
+}
+
+void save_config_target_lang(const char *lang) {
+    char *source = load_config_last_source_lang();
+    rewrite_config(lang, source);
+    free(source);
+}
+
+void save_config_last_source_lang(const char *lang) {
+    char *target = load_config_target_lang();
+    rewrite_config(target, lang);
+    free(target);
 }

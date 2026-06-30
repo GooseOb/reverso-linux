@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "config.h"
 #include "gui.h"
 #include "translator.h"
@@ -9,8 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-#define MAX_TEXT 4096
 
 static void usage(const char *prog) {
     fprintf(stderr,
@@ -98,25 +94,14 @@ int main(int argc, char *argv[]) {
     if (!source_lang)
         source_lang = strdup(strcasecmp(target, "english") == 0 ? "russian" : "english");
 
-    TranslationResponse *r = translate_text(text, source_lang, target);
+    g_set_prgname("reverso-linux");
+    gtk_init(0, NULL);
 
-    save_config_target_lang(target);
-    save_config_last_source_lang(source_lang);
+    show_translation_gui(text, source_lang, target);
 
     free(saved_src);
     free(target);
 
-    if (!r) {
-        fprintf(stderr, "Translation failed\n");
-        free(text);
-        free(source_lang);
-        return 1;
-    }
-
-    g_set_prgname("reverso-linux");
-    gtk_init(0, NULL);
-
-    show_translation_gui(text, source_lang, r);
     gtk_main();
 
     free(source_lang);

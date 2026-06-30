@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "gui.h"
 #include "config.h"
 #include <ctype.h>
@@ -18,11 +16,29 @@ static struct {
     GtkWidget *examples_header;
     GtkWidget *examples_grid;
     GtkWidget *option_buttons[64];
+    GtkWidget *window;
     int num_buttons;
     int built;
     int toggling;
     int suppressing;
+    int busy;
 } ctx;
+
+typedef struct {
+    char *text;
+    char *source_lang;
+    char *target_lang;
+    TranslationResponse *response;
+} TranslateJob;
+
+typedef struct {
+    char *text;
+    char *source_lang;
+    char *target_lang;
+    char *fragment;
+    ContextExamples *result;
+    int option_idx;
+} ContextJob;
 
 static int is_short_text(const char *text) {
     if (!text || !*text) return 0;
@@ -89,10 +105,14 @@ static void rebuild_all_examples(void) {
     gtk_widget_show_all(ctx.examples_grid);
 }
 
-static void rebuild_examples(int option_idx) {
-    if (!ctx.response || option_idx < 0 || option_idx >= ctx.response->num_options) return;
+static gboolean on_context_fetched(gpointer data) {
+    ContextJob *job = data;
+    if (job->option_idx < 0 || !ctx.response || job->option_idx >= ctx.response->num_options) {
+        free_context_examples(job->result);
+        goto cleanup;
+    }
 
-    TranslationOption *opt = &ctx.response->options[option_idx];
+    TranslationOption *opt = &ctx.response->options[job->option_idx];
     char header[256];
     snprintf(header, sizeof(header), "Examples for: %s", opt->translation ? opt->translation : "?");
     gtk_label_set_text(GTK_LABEL(ctx.examples_header), header);
@@ -101,13 +121,7 @@ static void rebuild_examples(int option_idx) {
     for (GList *l = child; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
     g_list_free(child);
 
-    char *src_lang = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.source_combo));
-    char *tgt_lang = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.target_combo));
-
-    ContextExamples *fetched = NULL;
-    if (src_lang && tgt_lang && ctx.input_text)
-        fetched = fetch_context_examples(ctx.input_text, src_lang, tgt_lang, opt->translation);
-
+    ContextExamples *fetched = job->result;
     if (fetched && fetched->num_examples > 0) {
         GtkWidget *src_hdr = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(src_hdr), "<b>Source</b>");
@@ -137,7 +151,6 @@ static void rebuild_examples(int option_idx) {
             gtk_label_set_line_wrap(GTK_LABEL(tl), TRUE);
             gtk_grid_attach(GTK_GRID(ctx.examples_grid), tl, 1, i + 1, 1, 1);
         }
-        free_context_examples(fetched);
     } else {
         const char *err_msg = fetched && fetched->error
                                   ? fetched->error
@@ -149,12 +162,60 @@ static void rebuild_examples(int option_idx) {
         gtk_label_set_xalign(GTK_LABEL(err), 0.0);
         gtk_label_set_line_wrap(GTK_LABEL(err), TRUE);
         gtk_grid_attach(GTK_GRID(ctx.examples_grid), err, 0, 0, 2, 1);
-        free_context_examples(fetched);
     }
 
+    gtk_widget_show_all(ctx.examples_grid);
+
+    free_context_examples(job->result);
+
+cleanup:
+    free(job->text);
+    free(job->source_lang);
+    free(job->target_lang);
+    free(job->fragment);
+    g_free(job);
+    return FALSE;
+}
+
+static gpointer context_thread(gpointer data) {
+    ContextJob *job = data;
+    job->result =
+        fetch_context_examples(job->text, job->source_lang, job->target_lang, job->fragment);
+    g_idle_add(on_context_fetched, job);
+    return NULL;
+}
+
+static void rebuild_examples_async(int option_idx) {
+    if (!ctx.response || option_idx < 0 || option_idx >= ctx.response->num_options) return;
+
+    TranslationOption *opt = &ctx.response->options[option_idx];
+    char header[256];
+    snprintf(header, sizeof(header), "Examples for: %s", opt->translation ? opt->translation : "?");
+    gtk_label_set_text(GTK_LABEL(ctx.examples_header), header);
+
+    GList *child = gtk_container_get_children(GTK_CONTAINER(ctx.examples_grid));
+    for (GList *l = child; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(child);
+
+    char *src_lang = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.source_combo));
+    char *tgt_lang = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.target_combo));
+    if (!src_lang || !tgt_lang || !ctx.input_text) {
+        g_free(src_lang);
+        g_free(tgt_lang);
+        return;
+    }
+
+    ContextJob *job = g_new(ContextJob, 1);
+    job->text = strdup(ctx.input_text);
+    job->source_lang = strdup(src_lang);
+    job->target_lang = strdup(tgt_lang);
+    job->fragment = opt->translation ? strdup(opt->translation) : strdup("");
+    job->result = NULL;
+    job->option_idx = option_idx;
     g_free(src_lang);
     g_free(tgt_lang);
-    gtk_widget_show_all(ctx.examples_grid);
+
+    g_thread_new("context-fetch", context_thread, job);
 }
 
 static void on_option_toggled(GtkToggleButton *btn, gpointer user_data) {
@@ -169,7 +230,7 @@ static void on_option_toggled(GtkToggleButton *btn, gpointer user_data) {
             else gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(ctx.option_buttons[i]), FALSE);
         }
         ctx.toggling = 0;
-        if (idx >= 0) rebuild_examples(idx);
+        if (idx >= 0) rebuild_examples_async(idx);
     } else {
         rebuild_all_examples();
     }
@@ -252,33 +313,64 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(ctx.content_box), ex_sw, TRUE, TRUE, 0);
 
     if (show_options && ctx.num_buttons > 0) rebuild_all_examples();
-    else if (!show_options && ctx.response->num_options > 0) rebuild_examples(0);
+    else if (!show_options && ctx.response->num_options > 0) rebuild_examples_async(0);
 
     gtk_widget_show_all(ctx.content_box);
 }
 
-static void do_translate(const char *src, const char *tgt) {
-    TranslationResponse *r = translate_text(ctx.input_text, src, tgt);
-    if (!r) {
-        gtk_label_set_text(GTK_LABEL(ctx.examples_header), "Translation failed");
-        return;
-    }
+static gboolean on_translate_complete(gpointer data) {
+    TranslateJob *job = data;
+    ctx.busy = 0;
 
-    free_translation_response(ctx.response);
-    ctx.response = r;
+    if (job->response) {
+        free_translation_response(ctx.response);
+        ctx.response = job->response;
 
-    save_config_target_lang(tgt);
-    save_config_last_source_lang(src);
+        save_config_target_lang(job->target_lang);
+        save_config_last_source_lang(job->source_lang);
 
-    if (r->num_options == 0 && r->num_translations > 0) {
-        if (fill_bst_options(r, ctx.input_text, r->source_lang, r->target_lang) != 0) {
-            r->options = calloc(1, sizeof(TranslationOption));
-            r->options[0].translation = strdup(r->translations[0]);
-            r->num_options = 1;
+        if (ctx.response->num_options == 0 && ctx.response->num_translations > 0) {
+            if (fill_bst_options(ctx.response, ctx.input_text, ctx.response->source_lang,
+                    ctx.response->target_lang) != 0) {
+                ctx.response->options = calloc(1, sizeof(TranslationOption));
+                ctx.response->options[0].translation = strdup(ctx.response->translations[0]);
+                ctx.response->num_options = 1;
+            }
         }
+        build_ui();
+    } else {
+        gtk_label_set_text(GTK_LABEL(ctx.examples_header), "Translation failed");
+        gtk_widget_show_all(ctx.content_box);
     }
 
-    build_ui();
+    free(job->text);
+    free(job->source_lang);
+    free(job->target_lang);
+    g_free(job);
+    return FALSE;
+}
+
+static gpointer translate_thread(gpointer data) {
+    TranslateJob *job = data;
+    job->response = translate_text(job->text, job->source_lang, job->target_lang);
+    g_idle_add(on_translate_complete, job);
+    return NULL;
+}
+
+static void do_translate_async(const char *src, const char *tgt) {
+    if (ctx.busy) return;
+    ctx.busy = 1;
+
+    remove_all_children(ctx.content_box);
+    gtk_label_set_text(GTK_LABEL(ctx.examples_header), "Translating...");
+    gtk_widget_show_all(ctx.content_box);
+
+    TranslateJob *job = g_new(TranslateJob, 1);
+    job->text = strdup(ctx.input_text);
+    job->source_lang = strdup(src);
+    job->target_lang = strdup(tgt);
+    job->response = NULL;
+    g_thread_new("translate", translate_thread, job);
 }
 
 static char *get_selected_option_text(void) {
@@ -308,6 +400,7 @@ static const char *find_swap_lang(const char *exclude) {
 static void retranslate(void) {
     if (ctx.toggling) return;
     if (ctx.suppressing) return;
+    if (ctx.busy) return;
 
     char *src = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.source_combo));
     char *tgt = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.target_combo));
@@ -356,13 +449,13 @@ static void retranslate(void) {
 
         g_free(src);
         g_free(tgt);
-        do_translate(new_src, new_tgt);
+        do_translate_async(new_src, new_tgt);
         g_free(saved_tgt);
         g_free(saved_src);
         return;
     }
 
-    do_translate(src, tgt);
+    do_translate_async(src, tgt);
     g_free(src);
     g_free(tgt);
 }
@@ -378,6 +471,8 @@ static void on_lang_changed(GtkComboBox *combo, gpointer data) {
 static void on_swap_clicked(GtkButton *btn, gpointer data) {
     (void)btn;
     (void)data;
+    if (ctx.busy) return;
+
     char *src = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.source_combo));
     char *tgt = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(ctx.target_combo));
     if (!src || !tgt) {
@@ -437,6 +532,8 @@ static GtkWidget *make_lang_combo(GtkBox *parent, const char *label_text) {
 }
 
 static void on_translate_clicked(void) {
+    if (ctx.busy) return;
+
     const char *new_text = gtk_entry_get_text(GTK_ENTRY(ctx.text_entry));
     if (!new_text || !*new_text) return;
 
@@ -451,31 +548,71 @@ static void on_translate_clicked(void) {
     free(ctx.input_text);
     ctx.input_text = strdup(new_text);
 
-    do_translate(src, tgt);
+    do_translate_async(src, tgt);
     g_free(src);
     g_free(tgt);
 }
 
-void show_translation_gui(
-    const char *text, const char *source_lang, TranslationResponse *initial_r) {
+static gboolean on_initial_translate_complete(gpointer data) {
+    TranslateJob *job = data;
+    ctx.busy = 0;
+
+    if (job->response) {
+        ctx.response = job->response;
+
+        save_config_target_lang(job->target_lang);
+        save_config_last_source_lang(job->source_lang);
+
+        if (ctx.response->num_options == 0 && ctx.response->num_translations > 0) {
+            if (fill_bst_options(ctx.response, ctx.input_text, ctx.response->source_lang,
+                    ctx.response->target_lang) != 0) {
+                ctx.response->options = calloc(1, sizeof(TranslationOption));
+                ctx.response->options[0].translation = strdup(ctx.response->translations[0]);
+                ctx.response->num_options = 1;
+            }
+        }
+        build_ui();
+    } else {
+        remove_all_children(ctx.content_box);
+        GtkWidget *err = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(err), "<span color='red'>Translation failed</span>");
+        gtk_label_set_line_wrap(GTK_LABEL(err), TRUE);
+        gtk_box_pack_start(GTK_BOX(ctx.content_box), err, FALSE, FALSE, 0);
+        gtk_widget_show_all(ctx.content_box);
+    }
+
+    free(job->text);
+    free(job->source_lang);
+    free(job->target_lang);
+    g_free(job);
+    return FALSE;
+}
+
+static gpointer initial_translate_thread(gpointer data) {
+    TranslateJob *job = data;
+    job->response = translate_text(job->text, job->source_lang, job->target_lang);
+    g_idle_add(on_initial_translate_complete, job);
+    return NULL;
+}
+
+void show_translation_gui(const char *text, const char *source_lang, const char *target_lang) {
     memset(&ctx, 0, sizeof(ctx));
     ctx.input_text = strdup(text);
-    ctx.response = initial_r;
     ctx.built = 0;
 
-    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "Reverso Linux");
-    gtk_window_set_default_size(GTK_WINDOW(window), 640, 640);
-    gtk_window_set_resizable(GTK_WINDOW(window), TRUE);
-    gtk_window_set_keep_above(GTK_WINDOW(window), TRUE);
-    gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
-    gtk_container_set_border_width(GTK_CONTAINER(window), 8);
+    ctx.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(ctx.window), "Reverso Linux");
+    gtk_window_set_default_size(GTK_WINDOW(ctx.window), 640, 640);
+    gtk_window_set_resizable(GTK_WINDOW(ctx.window), TRUE);
+    gtk_window_set_keep_above(GTK_WINDOW(ctx.window), TRUE);
+    gtk_window_set_position(GTK_WINDOW(ctx.window), GTK_WIN_POS_CENTER);
+    gtk_container_set_border_width(GTK_CONTAINER(ctx.window), 8);
 
-    g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
-    g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), NULL);
+    g_signal_connect(ctx.window, "destroy", G_CALLBACK(on_destroy), NULL);
+    g_signal_connect(ctx.window, "key-press-event", G_CALLBACK(on_key_press), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_container_add(GTK_CONTAINER(window), vbox);
+    gtk_container_add(GTK_CONTAINER(ctx.window), vbox);
 
     GtkWidget *lang_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     ctx.source_combo = make_lang_combo(GTK_BOX(lang_hbox), "From:");
@@ -515,20 +652,22 @@ void show_translation_gui(
     ctx.content_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_box_pack_start(GTK_BOX(vbox), ctx.content_box, TRUE, TRUE, 0);
 
-    if (initial_r->num_options == 0 && initial_r->num_translations > 0) {
-        if (fill_bst_options(initial_r, text, source_lang, initial_r->target_lang) != 0) {
-            initial_r->options = calloc(1, sizeof(TranslationOption));
-            initial_r->options[0].translation = strdup(initial_r->translations[0]);
-            initial_r->num_options = 1;
-        }
-    }
-
-    build_ui();
+    GtkWidget *loading = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(loading), "<i>Translating...</i>");
+    gtk_box_pack_start(GTK_BOX(ctx.content_box), loading, FALSE, FALSE, 0);
 
     GtkWidget *close_btn = gtk_button_new_with_label("Close (Esc)");
     g_signal_connect_swapped(close_btn, "clicked", G_CALLBACK(gtk_main_quit), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), close_btn, FALSE, FALSE, 0);
 
-    gtk_widget_show_all(window);
+    gtk_widget_show_all(ctx.window);
     ctx.built = 1;
+
+    ctx.busy = 1;
+    TranslateJob *job = g_new(TranslateJob, 1);
+    job->text = strdup(text);
+    job->source_lang = strdup(source_lang);
+    job->target_lang = strdup(target_lang);
+    job->response = NULL;
+    g_thread_new("initial-translate", initial_translate_thread, job);
 }

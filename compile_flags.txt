@@ -1,4 +1,8 @@
 -std=c11
+-Wall
+-Wextra
+-pedantic
+-D_GNU_SOURCE
 -I/usr/include/json-c
 -I/usr/include/gtk-3.0
 -I/usr/include/pango-1.0

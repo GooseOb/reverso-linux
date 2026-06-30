@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "translator.h"
 #include <curl/curl.h>
 #include <json-c/json.h>
@@ -13,10 +11,13 @@ static const char *API_URL = "https://api.reverso.net/translate/v1/translation";
 static struct {
     const char *name;
     const char *code;
-} LANG_MAP[] = {{"english", "eng"}, {"russian", "rus"}, {"ukrainian", "ukr"}, {"french", "fra"},
-    {"german", "ger"}, {"spanish", "spa"}, {"italian", "ita"}, {"portuguese", "por"},
-    {"polish", "pol"}, {"dutch", "dut"}, {"arabic", "ara"}, {"hebrew", "heb"}, {"japanese", "jpn"},
-    {"turkish", "tur"}, {"chinese", "chi"}, {"romanian", "rum"}, {"swedish", "swe"}, {NULL, NULL}};
+    const char *code_short;
+} LANG_MAP[] = {{"english", "eng", "en"}, {"russian", "rus", "ru"}, {"ukrainian", "ukr", "uk"},
+    {"french", "fra", "fr"}, {"german", "ger", "de"}, {"spanish", "spa", "es"},
+    {"italian", "ita", "it"}, {"portuguese", "por", "pt"}, {"polish", "pol", "pl"},
+    {"dutch", "dut", "nl"}, {"arabic", "ara", "ar"}, {"hebrew", "heb", "he"},
+    {"japanese", "jpn", "ja"}, {"turkish", "tur", "tr"}, {"chinese", "chi", "zh"},
+    {"romanian", "rum", "ro"}, {"swedish", "swe", "sv"}, {NULL, NULL, NULL}};
 
 const char *SUPPORTED_LANGUAGES[] = {"english", "russian", "ukrainian", "french", "german",
     "spanish", "italian", "portuguese", "polish", "dutch", "arabic", "hebrew", "japanese",
@@ -88,13 +89,63 @@ static char *strip_html(const char *src) {
     return out;
 }
 
+typedef struct {
+    char *data;
+    long http_code;
+} HttpResult;
+
+static HttpResult http_post(
+    const char *url, const char *body_str, struct curl_slist *headers, const char *useragent) {
+    CURL *curl = curl_easy_init();
+    HttpResult result = {0, 0};
+    if (!curl) return result;
+
+    struct WriteBuf buf = {0};
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    if (useragent) curl_easy_setopt(curl, CURLOPT_USERAGENT, useragent);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &result.http_code);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(buf.data);
+        return result;
+    }
+    result.data = buf.data;
+    return result;
+}
+
+static struct curl_slist *bst_headers(void) {
+    struct curl_slist *h = NULL;
+    h = curl_slist_append(h, "Content-Type: application/json");
+    h = curl_slist_append(h, "Accept: application/json");
+    h = curl_slist_append(h, "Accept-Language: en-US,en;q=0.9");
+    h = curl_slist_append(h, "Origin: https://context.reverso.net");
+    h = curl_slist_append(h, "Referer: https://context.reverso.net/");
+    h = curl_slist_append(h, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+    return h;
+}
+
+static void dump_bst_error(long http_code, const char *text, const char *fragment,
+    const char *src_short, const char *tgt_short, const char *data) {
+    FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
+    if (!f) return;
+    fprintf(f,
+        "HTTP %ld\nreq: source_text=%s target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
+        http_code, text, fragment, src_short, tgt_short, data ? data : "(null)");
+    fclose(f);
+}
+
 TranslationResponse *translate_text(const char *text, const char *source, const char *target) {
     const char *src_code = lang_to_code(source);
     const char *tgt_code = lang_to_code(target);
     if (!src_code || !tgt_code) return NULL;
-
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
 
     json_object *root = json_object_new_object();
     json_object_object_add(root, "format", json_object_new_string("text"));
@@ -108,8 +159,6 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
     json_object_object_add(root, "options", opts);
     json_object_object_add(root, "to", json_object_new_string(tgt_code));
 
-    const char *body = json_object_to_json_string(root);
-
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, "Accept: */*");
@@ -121,32 +170,18 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
     headers = curl_slist_append(headers, "Sec-Fetch-Mode: cors");
     headers = curl_slist_append(headers, "Sec-Fetch-Site: same-site");
 
-    struct WriteBuf buf = {0};
-
-    curl_easy_setopt(curl, CURLOPT_URL, API_URL);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT,
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 "
-        "Safari/537.36");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-
-    CURLcode res = curl_easy_perform(curl);
+    HttpResult hr = http_post(API_URL, json_object_to_json_string(root), headers,
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
     json_object_put(root);
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK || !buf.data) {
-        free(buf.data);
-        return NULL;
-    }
+    if (!hr.data) return NULL;
 
-    json_object *resp = json_tokener_parse(buf.data);
+    json_object *resp = json_tokener_parse(hr.data);
     if (!resp) {
-        free(buf.data);
+        free(hr.data);
         return NULL;
     }
 
@@ -213,7 +248,7 @@ TranslationResponse *translate_text(const char *text, const char *source, const 
     }
 
     json_object_put(resp);
-    free(buf.data);
+    free(hr.data);
     return r;
 }
 
@@ -237,101 +272,31 @@ void free_translation_response(TranslationResponse *r) {
 #define MAX_FETCHED 256
 
 static const char *lang_to_code_short(const char *lang) {
-    static const char *map[][2] = {{"english", "en"}, {"russian", "ru"}, {"ukrainian", "uk"},
-        {"french", "fr"}, {"german", "de"}, {"spanish", "es"}, {"italian", "it"},
-        {"portuguese", "pt"}, {"polish", "pl"}, {"dutch", "nl"}, {"arabic", "ar"}, {"hebrew", "he"},
-        {"japanese", "ja"}, {"turkish", "tr"}, {"chinese", "zh"}, {"romanian", "ro"},
-        {"swedish", "sv"}, {NULL, NULL}};
-    for (int i = 0; map[i][0]; i++)
-        if (strcasecmp(map[i][0], lang) == 0) return map[i][1];
+    for (int i = 0; LANG_MAP[i].name; i++)
+        if (strcasecmp(LANG_MAP[i].name, lang) == 0) return LANG_MAP[i].code_short;
     return NULL;
 }
+
+static json_object *bst_query_internal(
+    const char *text, const char *source, const char *target, const char *fragment);
 
 ContextExamples *fetch_context_examples(
     const char *text, const char *source, const char *target, const char *fragment) {
     if (!fragment) return NULL;
 
-    const char *src_short = lang_to_code_short(source);
-    const char *tgt_short = lang_to_code_short(target);
-    if (!src_short || !tgt_short) return NULL;
-
-    json_object *body = json_object_new_object();
-    json_object_object_add(body, "source_text", json_object_new_string(text));
-    json_object_object_add(body, "target_text", json_object_new_string(fragment));
-    json_object_object_add(body, "source_lang", json_object_new_string(src_short));
-    json_object_object_add(body, "target_lang", json_object_new_string(tgt_short));
-    json_object_object_add(body, "npage", json_object_new_int(1));
-    json_object_object_add(body, "mode", json_object_new_int(0));
-
-    const char *body_str = json_object_to_json_string(body);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        json_object_put(body);
-        return NULL;
-    }
-
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
-    headers = curl_slist_append(headers, "Origin: https://context.reverso.net");
-    headers = curl_slist_append(headers, "Referer: https://context.reverso.net/");
-    headers = curl_slist_append(
-        headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-
-    struct WriteBuf buf = {0};
-    curl_easy_setopt(curl, CURLOPT_URL, "https://context.reverso.net/bst-query-service");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-
-    long http_code = 0;
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    json_object_put(body);
-
     ContextExamples *ctx = calloc(1, sizeof(ContextExamples));
 
-    if (res != CURLE_OK || !buf.data) {
-        ctx->error = strdup("Network error: could not reach context.reverso.net");
-        free(buf.data);
-        return ctx;
-    }
-
-    json_object *resp = json_tokener_parse(buf.data);
+    json_object *resp = bst_query_internal(text, source, target, fragment);
     if (!resp) {
-        FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
-        if (f) {
-            fprintf(f,
-                "HTTP %ld\ncurl error: %d\nreq: source_text=%s target_text=%s source_lang=%s "
-                "target_lang=%s\nresp:\n%s\n",
-                http_code, res, text, fragment, src_short, tgt_short, buf.data);
-            fclose(f);
-        }
-        ctx->error = strdup("Failed to parse response from context.reverso.net");
-        free(buf.data);
+        ctx->error = strdup("Failed to fetch examples from context.reverso.net");
         return ctx;
     }
 
     json_object *list;
     if (!json_object_object_get_ex(resp, "list", &list) ||
         json_object_get_type(list) != json_type_array) {
-        FILE *f = fopen("/tmp/reverso-bst-error.log", "w");
-        if (f) {
-            fprintf(f,
-                "HTTP %ld\ncurl error: %d\nno 'list' array in response\nreq: source_text=%s "
-                "target_text=%s source_lang=%s target_lang=%s\nresp:\n%s\n",
-                http_code, res, text, fragment, src_short, tgt_short, buf.data);
-            fclose(f);
-        }
         ctx->error = strdup("No examples list in response from context.reverso.net");
         json_object_put(resp);
-        free(buf.data);
         return ctx;
     }
 
@@ -357,69 +322,50 @@ ContextExamples *fetch_context_examples(
     }
 
     json_object_put(resp);
-    free(buf.data);
 
-    if (ctx->num_examples == 0) { ctx->error = strdup("No examples found on context.reverso.net"); }
+    if (ctx->num_examples == 0) ctx->error = strdup("No examples found on context.reverso.net");
 
     return ctx;
 }
 
-int fill_bst_options(
-    TranslationResponse *r, const char *text, const char *source, const char *target) {
+static json_object *bst_query_internal(
+    const char *text, const char *source, const char *target, const char *fragment) {
     const char *src_short = lang_to_code_short(source);
     const char *tgt_short = lang_to_code_short(target);
-    if (!src_short || !tgt_short) return -1;
+    if (!src_short || !tgt_short) return NULL;
 
+    json_object *json_body = json_object_new_object();
+    json_object_object_add(json_body, "source_text", json_object_new_string(text));
+    json_object_object_add(json_body, "target_text", json_object_new_string(fragment));
+    json_object_object_add(json_body, "source_lang", json_object_new_string(src_short));
+    json_object_object_add(json_body, "target_lang", json_object_new_string(tgt_short));
+    json_object_object_add(json_body, "npage", json_object_new_int(1));
+    json_object_object_add(json_body, "mode", json_object_new_int(0));
+
+    struct curl_slist *headers = bst_headers();
+    HttpResult hr = http_post("https://context.reverso.net/bst-query-service",
+        json_object_to_json_string(json_body), headers, NULL);
+    curl_slist_free_all(headers);
+    json_object_put(json_body);
+
+    if (!hr.data) return NULL;
+
+    json_object *resp = json_tokener_parse(hr.data);
+    if (!resp) {
+        dump_bst_error(hr.http_code, text, fragment, src_short, tgt_short, hr.data);
+        free(hr.data);
+        return NULL;
+    }
+    free(hr.data);
+    return resp;
+}
+
+int fill_bst_options(
+    TranslationResponse *r, const char *text, const char *source, const char *target) {
     const char *fragment = r->num_translations > 0 ? r->translations[0] : "";
 
-    json_object *body = json_object_new_object();
-    json_object_object_add(body, "source_text", json_object_new_string(text));
-    json_object_object_add(body, "target_text", json_object_new_string(fragment));
-    json_object_object_add(body, "source_lang", json_object_new_string(src_short));
-    json_object_object_add(body, "target_lang", json_object_new_string(tgt_short));
-    json_object_object_add(body, "npage", json_object_new_int(1));
-    json_object_object_add(body, "mode", json_object_new_int(0));
-
-    const char *body_str = json_object_to_json_string(body);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        json_object_put(body);
-        return -1;
-    }
-
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.9");
-    headers = curl_slist_append(headers, "Origin: https://context.reverso.net");
-    headers = curl_slist_append(headers, "Referer: https://context.reverso.net/");
-    headers = curl_slist_append(
-        headers, "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-
-    struct WriteBuf buf = {0};
-    curl_easy_setopt(curl, CURLOPT_URL, "https://context.reverso.net/bst-query-service");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buf);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    json_object_put(body);
-
-    if (res != CURLE_OK || !buf.data) {
-        free(buf.data);
-        return -1;
-    }
-
-    json_object *resp = json_tokener_parse(buf.data);
-    if (!resp) {
-        free(buf.data);
-        return -1;
-    }
+    json_object *resp = bst_query_internal(text, source, target, fragment);
+    if (!resp) return -1;
 
     int count = 0;
 
@@ -434,16 +380,12 @@ int fill_bst_options(
 
             for (int i = 0; i < n; i++) {
                 json_object *entry = json_object_array_get_idx(dict_entries, i);
-
                 json_object *term;
-                if (json_object_object_get_ex(entry, "term", &term)) {
+                if (json_object_object_get_ex(entry, "term", &term))
                     r->options[i].translation = strdup(json_object_get_string(term));
-                }
-
                 json_object *freq;
                 if (json_object_object_get_ex(entry, "frequency", &freq))
                     r->options[i].frequency = json_object_get_int(freq);
-
                 count++;
             }
             r->num_options = count;
@@ -489,8 +431,6 @@ int fill_bst_options(
     }
 
     json_object_put(resp);
-    free(buf.data);
-
     return count > 0 ? 0 : -1;
 }
 
